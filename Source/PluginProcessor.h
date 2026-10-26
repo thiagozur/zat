@@ -69,5 +69,19 @@ private:
     std::atomic<float>* parallelModeParam = nullptr;
     std::atomic<float>* outputGainParam = nullptr;
 
+    juce::dsp::Oversampling<float> oversampling { 2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true };
+
+    using Filter = juce::dsp::IIR::Filter<float>;
+    using CutFilter = juce::dsp::ProcessorDuplicator<Filter, juce::dsp::IIR::Coefficients<float>>;
+
+    CutFilter lowCutFilter;
+    CutFilter highCutFilter;
+    CutFilter weightFilter;
+    CutFilter airFilter;
+
+    float applySaturation (float input, int type, float drive);
+
+    double currentSampleRate = 44100.0;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ZatAudioProcessor)
 };

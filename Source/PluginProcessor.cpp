@@ -1,4 +1,4 @@
-#include "PluginProcessor.h"
+﻿#include "PluginProcessor.h"
 #include "PluginEditor.h"
 
 ZatAudioProcessor::ZatAudioProcessor()
@@ -90,7 +90,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
 
 void ZatAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    currentSampleRate = sampleRate;
 
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate * 4.0;
+    spec.maximumBlockSize = static_cast<uint32_t> (samplesPerBlock * 4);
+    spec.numChannels = static_cast<uint32_t> (getTotalNumOutputChannels());
+
+    oversampling.initProcessing (samplesPerBlock);
+    oversampling.reset();
+
+    lowCutFilter.prepare (spec);
+    highCutFilter.prepare (spec);
+    weightFilter.prepare (spec);
+    airFilter.prepare (spec);
+
+    *lowCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 20.0f);
+    *highCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0f);
+    *weightFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, 1.0f);
+    *airFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 10000.0f, 0.707f, 1.0f);
 }
 
 void ZatAudioProcessor::releaseResources() {}
@@ -108,6 +126,59 @@ bool ZatAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 }
 #endif
 
+float ZatAudioProcessor::applySaturation (float input, int type, float drive)
+{
+    float driveDb = drive * 24.0f;
+    float preGain = juce::Decibels::decibelsToGain (driveDb);
+    float x = input * preGain;
+
+    switch (type)
+    {
+    case 0: // valvular
+    {
+        float biased = x + 0.15f * (x * x);
+        return static_cast<float> (std::tanh (biased) / std::tanh (1.15));
+    }
+    case 1: // cinta
+    {
+        return std::atan (x * 1.2f) / std::atan (1.2f);
+    }
+    case 2: // diodo
+    {
+        if (x > 0.8f)
+            return 0.8f + (x - 0.8f) / (1.0f + std::pow((x - 0.8f) / 0.2f, 2.0f));
+        if (x < -0.6f)
+            return -0.6f - (-x - 0.6f) / (1.0f + std::pow((-x - 0.6f) / 0.2f, 2.0f));
+        return x;
+    }
+    case 3: // soft clipping con tgh
+    {
+        return std::tanh (x);
+    }
+    case 4: // transformador
+    {
+        float cubic = x - (x * x * x) / 3.0f;
+        return std::tanh (cubic);
+    }
+    case 5: // estado sólido
+    {
+        float cubed = x * x * x;
+        return x / (1.0f + std::abs (cubed) * 0.5f);
+    }
+    case 6: // rectificación
+    {
+        float rectified = std::abs (x) - 0.5f;
+        return juce::jlimit (-1.0f, 1.0f, x + 0.3f * rectified);
+    }
+    case 7: // wavefolding
+    {
+        return std::sin (x * juce::MathConstants<float>::halfPi);
+    }
+    default:
+        return std::tanh (x);
+    }
+}
+
 void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /* midiMessages */)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -117,6 +188,71 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
+    int satType = static_cast<int> (*satTypeParam);
+    
+    float satAmount = *satAmountParam / 100.0f;
+    
+    float lowCutFreq = *freqLowCutParam;
+    float highCutFreq = *freqHighCutParam;
+    
+    bool weightEnable = *weightEnableParam > 0.5f;
+    float weightAmt = *weightAmountParam / 100.0f;
+    
+    bool airEnable = *airEnableParam > 0.5f;
+    float airAmt = *airAmountParam / 100.0f;
+    
+    bool parallelMode = *parallelModeParam > 0.5f;
+    float outGainDb = *outputGainParam;
+
+    juce::AudioBuffer<float> dryBuffer;
+    dryBuffer.makeCopyOf (buffer);
+
+    double oversampledRate = currentSampleRate * 4.0;
+
+    *lowCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass (oversampledRate, lowCutFreq);
+    *highCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (oversampledRate, highCutFreq);
+
+    float weightGainDb = weightEnable ? (weightAmt * 12.0f) : 0.0f;
+    *weightFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (oversampledRate, 180.0f, 0.707f, juce::Decibels::decibelsToGain (weightGainDb));
+    
+    float airGainDb = airEnable ? (airAmt * 15.0f) : 0.0f;
+    *airFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (oversampledRate, 12000.0f, 0.707f, juce::Decibels::decibelsToGain (airGainDb));
+
+    juce::dsp::AudioBlock<float> block (buffer);
+    auto oversampledBlock = oversampling.processSamplesUp (block);
+
+    juce::dsp::ProcessContextReplacing<float> context (oversampledBlock);
+
+    lowCutFilter.process (context);
+    highCutFilter.process (context);
+
+    for (size_t ch = 0; ch < oversampledBlock.getNumChannels(); ++ch)
+    {
+        auto* channelData = oversampledBlock.getChannelPointer (ch);
+        for (size_t s = 0; s < oversampledBlock.getNumSamples(); ++s)
+            channelData[s] = applySaturation (channelData[s], satType, satAmount);
+    }
+
+    weightFilter.process (context);
+    airFilter.process (context);
+
+    oversampling.processSamplesDown (block);
+
+    for (int ch = 0; ch < totalNumInputChannels; ++ch)
+    {
+        auto* wet = buffer.getWritePointer (ch);
+        const auto* dry = dryBuffer.getReadPointer (ch);
+
+        for (int s = 0; s < buffer.getNumSamples(); ++s)
+        {
+            if (parallelMode)
+                wet[s] = wet[s] - dry[s];
+            else
+                wet[s] = wet[s];
+        }
+    }
+
+    buffer.applyGain (juce::Decibels::decibelsToGain (outGainDb));
 }
 
 bool ZatAudioProcessor::hasEditor() const {
