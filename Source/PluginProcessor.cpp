@@ -24,9 +24,16 @@ ZatAudioProcessor::ZatAudioProcessor()
     airAmountParam = apvts.getRawParameterValue (ParameterIDs::airAmount);
     inputGainParam = apvts.getRawParameterValue (ParameterIDs::inputGain);
     outputGainParam = apvts.getRawParameterValue (ParameterIDs::outputGain);
+
+    apvts.addParameterListener (ParameterIDs::freqLowCut, this);
+    apvts.addParameterListener (ParameterIDs::freqHighCut, this);
 }
 
-ZatAudioProcessor::~ZatAudioProcessor() {}
+ZatAudioProcessor::~ZatAudioProcessor()
+{
+    apvts.removeParameterListener (ParameterIDs::freqLowCut, this);
+    apvts.removeParameterListener (ParameterIDs::freqHighCut, this);
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createParameterLayout()
 {
@@ -90,6 +97,34 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
     return layout;
 }
 
+void ZatAudioProcessor::parameterChanged (const juce::String& parameterID, float /* newValue */)
+{
+    if (parameterID == ParameterIDs::freqLowCut || parameterID == ParameterIDs::freqHighCut)
+    {
+        auto lowParam = apvts.getParameter (ParameterIDs::freqLowCut);
+        auto highParam = apvts.getParameter (ParameterIDs::freqHighCut);
+
+        float lowHz = *apvts.getRawParameterValue (ParameterIDs::freqLowCut);
+        float highHz = *apvts.getRawParameterValue (ParameterIDs::freqHighCut);
+
+        const float minSep = 100.0f;
+
+        if (lowHz > highHz - minSep)
+        {
+            if (parameterID == ParameterIDs::freqLowCut)
+            {
+                float newHigh = juce::jmin (20000.0f, lowHz + minSep);
+                highParam->setValueNotifyingHost (highParam->convertTo0to1 (newHigh));
+            }
+            else
+            {
+                float newLow = juce::jmax (20.0f, highHz - minSep);
+                lowParam->setValueNotifyingHost (lowParam->convertTo0to1 (newLow));
+            }
+        }
+    }
+}
+
 void ZatAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
@@ -102,15 +137,22 @@ void ZatAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     oversampling.initProcessing (samplesPerBlock);
     oversampling.reset();
 
-    lowCutFilter.prepare (spec);
-    highCutFilter.prepare (spec);
+    lowCrossover.prepare (spec);
+    highCrossover.prepare (spec);
+    
+    lowCrossover.setType (juce::dsp::LinkwitzRileyFilterType::lowpass);
+    highCrossover.setType (juce::dsp::LinkwitzRileyFilterType::highpass);
+
+    lowCrossover.setCutoffFrequency (20.0f);
+    highCrossover.setCutoffFrequency (20000.0f);
+    lowCrossover.reset();
+    highCrossover.reset();
+
     weightFilter.prepare (spec);
     airFilter.prepare (spec);
 
-    *lowCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 20.0f);
-    *highCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 20000.0f);
-    *weightFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate, 200.0f, 0.707f, 1.0f);
-    *airFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 10000.0f, 0.707f, 1.0f);
+    *weightFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (sampleRate * 4.0, 200.0f, 0.707f, 1.0f);
+    *airFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate * 4.0, 10000.0f, 0.707f, 1.0f);
 }
 
 void ZatAudioProcessor::releaseResources() {}
@@ -138,43 +180,52 @@ float ZatAudioProcessor::applySaturation (float input, int type, float drive)
     {
     case 0: // valvular
     {
-        float biased = x + 0.15f * (x * x);
-        return static_cast<float> (std::tanh (biased) / std::tanh (1.15));
+        float bias = 0.05f + 0.2f * drive;
+        float biased = x + bias * (x * x);
+        float denominator = std::tanh (1.0f + bias);
+        return static_cast<float> (std::tanh (biased) / (denominator > 0.001f ? denominator : 1.0f));
     }
     case 1: // cinta
     {
-        return std::atan (x * 1.2f) / std::atan (1.2f);
+        float curve = 1.0f + 0.5f * drive;
+        return std::atan (x * curve) / std::atan (curve);
     }
     case 2: // diodo
     {
-        if (x > 0.8f)
-            return 0.8f + (x - 0.8f) / (1.0f + std::pow((x - 0.8f) / 0.2f, 2.0f));
-        if (x < -0.6f)
-            return -0.6f - (-x - 0.6f) / (1.0f + std::pow((-x - 0.6f) / 0.2f, 2.0f));
+        float threshold = 0.9f - 0.2f * drive;
+        if (x > threshold)
+            return threshold + (x - threshold) / (1.0f + std::pow((x - threshold) / 0.2f, 2.0f));
+        if (x < -threshold)
+            return -threshold - (-x - threshold) / (1.0f + std::pow((-x - threshold) / 0.2f, 2.0f));
         return x;
     }
     case 3: // soft clipping con tgh
     {
-        return std::tanh (x);
+        float sharpness = 1.0f + 0.5f * drive;
+        return std::tanh (x * sharpness) / sharpness;
     }
     case 4: // transformador
     {
-        float cubic = x - (x * x * x) / 3.0f;
+        float cubicCoeff = 0.2f + 0.15f * drive;
+        float cubic = x - cubicCoeff * (x * x * x);
         return std::tanh (cubic);
     }
     case 5: // estado sólido
     {
+        float scale = 0.3f + 0.4f * drive;
         float cubed = x * x * x;
-        return x / (1.0f + std::abs (cubed) * 0.5f);
+        return x / (1.0f + std::abs (cubed) * scale);
     }
     case 6: // rectificación
     {
+        float rectMix = 0.15f + 0.3f * drive;
         float rectified = std::abs (x) - 0.5f;
-        return juce::jlimit (-1.0f, 1.0f, x + 0.3f * rectified);
+        return juce::jlimit (-1.0f, 1.0f, x + rectMix * rectified);
     }
     case 7: // wavefolding
     {
-        return std::sin (x * juce::MathConstants<float>::halfPi);
+        float foldScale = 1.0f + 1.0f * drive;
+        return std::sin (x * foldScale * juce::MathConstants<float>::halfPi) / foldScale;
     }
     default:
         return std::tanh (x);
@@ -191,9 +242,7 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         buffer.clear (i, 0, buffer.getNumSamples());
 
     int satType = static_cast<int> (*satTypeParam);
-    
     float satAmount = *satAmountParam / 100.0f;
-    
     float lowCutFreq = *freqLowCutParam;
     float highCutFreq = *freqHighCutParam;
     
@@ -208,13 +257,10 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     buffer.applyGain (juce::Decibels::decibelsToGain (inGainDb));
 
-    juce::AudioBuffer<float> dryBuffer;
-    dryBuffer.makeCopyOf (buffer);
-
     double oversampledRate = currentSampleRate * 4.0;
 
-    *lowCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass (oversampledRate, lowCutFreq);
-    *highCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (oversampledRate, highCutFreq);
+    lowCrossover.setCutoffFrequency (lowCutFreq);
+    highCrossover.setCutoffFrequency (highCutFreq);
 
     float weightGainDb = weightEnable ? (weightAmt * 12.0f) : 0.0f;
     *weightFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (oversampledRate, 180.0f, 0.707f, juce::Decibels::decibelsToGain (weightGainDb));
@@ -225,35 +271,143 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     juce::dsp::AudioBlock<float> block (buffer);
     auto oversampledBlock = oversampling.processSamplesUp (block);
 
-    juce::dsp::ProcessContextReplacing<float> context (oversampledBlock);
+    int numCh = static_cast<int> (oversampledBlock.getNumChannels());
+    int numSamps = static_cast<int> (oversampledBlock.getNumSamples());
 
-    lowCutFilter.process (context);
-    highCutFilter.process (context);
+    bool bypassCrossover = (std::abs (lowCutFreq - 20.0f) < 0.1f && std::abs (highCutFreq - 20000.0f) < 0.1f);
 
-    for (size_t ch = 0; ch < oversampledBlock.getNumChannels(); ++ch)
+    if (bypassCrossover)
     {
-        auto* channelData = oversampledBlock.getChannelPointer (ch);
-        for (size_t s = 0; s < oversampledBlock.getNumSamples(); ++s)
-            channelData[s] = applySaturation (channelData[s], satType, satAmount);
-    }
+        juce::dsp::ProcessContextReplacing<float> context (oversampledBlock);
 
-    weightFilter.process (context);
-    airFilter.process (context);
-
-    oversampling.processSamplesDown (block);
-
-    const float equalPowerCoeff = 0.70710678f;
-
-    for (int ch = 0; ch < totalNumInputChannels; ++ch)
-    {
-        auto* wet = buffer.getWritePointer (ch);
-        const auto* dry = dryBuffer.getReadPointer (ch);
-
-        for (int s = 0; s < buffer.getNumSamples(); ++s)
+        for (size_t ch = 0; ch < oversampledBlock.getNumChannels(); ++ch)
         {
-            wet[s] = (dry[s] * equalPowerCoeff) + (wet[s] * equalPowerCoeff);
+            auto* channelData = oversampledBlock.getChannelPointer (ch);
+            for (size_t s = 0; s < oversampledBlock.getNumSamples(); ++s)
+                channelData[s] = applySaturation (channelData[s], satType, satAmount);
+        }
+
+        weightFilter.process (context);
+
+        if (weightEnable && weightAmt > 0.001f)
+        {
+            for (size_t ch = 0; ch < oversampledBlock.getNumChannels(); ++ch)
+            {
+                auto* channelData = oversampledBlock.getChannelPointer (ch);
+                for (size_t s = 0; s < oversampledBlock.getNumSamples(); ++s)
+                {
+                    float sample = channelData[s];
+                    float harmonic = sample + 0.15f * weightAmt * (sample * sample - sample * sample * sample);
+                    channelData[s] = sample + weightAmt * 0.3f * (harmonic - sample);
+                }
+            }
+        }
+
+        airFilter.process (context);
+
+        if (airEnable && airAmt > 0.001f)
+        {
+            for (size_t ch = 0; ch < oversampledBlock.getNumChannels(); ++ch)
+            {
+                auto* channelData = oversampledBlock.getChannelPointer (ch);
+                for (size_t s = 0; s < oversampledBlock.getNumSamples(); ++s)
+                {
+                    float sample = channelData[s];
+                    float exciter = std::tanh (sample * 1.5f) - sample;
+                    channelData[s] = sample + airAmt * 0.4f * exciter;
+                }
+            }
         }
     }
+    else
+    {
+        juce::AudioBuffer<float> lowBuffer (numCh, numSamps);
+        juce::AudioBuffer<float> midBuffer (numCh, numSamps);
+        juce::AudioBuffer<float> highBuffer (numCh, numSamps);
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            juce::FloatVectorOperations::copy (lowBuffer.getWritePointer (ch), oversampledBlock.getChannelPointer (ch), numSamps);
+            juce::FloatVectorOperations::copy (midBuffer.getWritePointer (ch), oversampledBlock.getChannelPointer (ch), numSamps);
+            juce::FloatVectorOperations::copy (highBuffer.getWritePointer (ch), oversampledBlock.getChannelPointer (ch), numSamps);
+        }
+
+        juce::dsp::AudioBlock<float> lowBlock (lowBuffer);
+        juce::dsp::AudioBlock<float> midBlock (midBuffer);
+        juce::dsp::AudioBlock<float> highBlock (highBuffer);
+
+        lowCrossover.process (juce::dsp::ProcessContextReplacing<float> (lowBlock));
+        highCrossover.process (juce::dsp::ProcessContextReplacing<float> (highBlock));
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            auto* orig = oversampledBlock.getChannelPointer (ch);
+            auto* low = lowBuffer.getReadPointer (ch);
+            auto* high = highBuffer.getReadPointer (ch);
+            auto* mid = midBuffer.getWritePointer (ch);
+
+            for (int s = 0; s < numSamps; ++s)
+            {
+                mid[s] = orig[s] - low[s] - high[s];
+            }
+        }
+
+        juce::dsp::ProcessContextReplacing<float> midContext (midBlock);
+
+        for (size_t ch = 0; ch < midBlock.getNumChannels(); ++ch)
+        {
+            auto* channelData = midBlock.getChannelPointer (ch);
+            for (size_t s = 0; s < midBlock.getNumSamples(); ++s)
+                channelData[s] = applySaturation (channelData[s], satType, satAmount);
+        }
+
+        weightFilter.process (midContext);
+
+        if (weightEnable && weightAmt > 0.001f)
+        {
+            for (size_t ch = 0; ch < midBlock.getNumChannels(); ++ch)
+            {
+                auto* channelData = midBlock.getChannelPointer (ch);
+                for (size_t s = 0; s < midBlock.getNumSamples(); ++s)
+                {
+                    float sample = channelData[s];
+                    float harmonic = sample + 0.15f * weightAmt * (sample * sample - sample * sample * sample);
+                    channelData[s] = sample + weightAmt * 0.3f * (harmonic - sample);
+                }
+            }
+        }
+
+        airFilter.process (midContext);
+
+        if (airEnable && airAmt > 0.001f)
+        {
+            for (size_t ch = 0; ch < midBlock.getNumChannels(); ++ch)
+            {
+                auto* channelData = midBlock.getChannelPointer (ch);
+                for (size_t s = 0; s < midBlock.getNumSamples(); ++s)
+                {
+                    float sample = channelData[s];
+                    float exciter = std::tanh (sample * 1.5f) - sample;
+                    channelData[s] = sample + airAmt * 0.4f * exciter;
+                }
+            }
+        }
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            auto* dest = oversampledBlock.getChannelPointer (ch);
+            auto* low = lowBuffer.getReadPointer (ch);
+            auto* mid = midBuffer.getReadPointer (ch);
+            auto* high = highBuffer.getReadPointer (ch);
+
+            for (int s = 0; s < numSamps; ++s)
+            {
+                dest[s] = low[s] + mid[s] + high[s];
+            }
+        }
+    }
+
+    oversampling.processSamplesDown (block);
 
     buffer.applyGain (juce::Decibels::decibelsToGain (outGainDb));
 }

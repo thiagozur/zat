@@ -19,7 +19,7 @@ namespace ParameterIDs
     static const juce::String outputGain = "outputGain";
 }
 
-class ZatAudioProcessor : public juce::AudioProcessor
+class ZatAudioProcessor : public juce::AudioProcessor, public juce::AudioProcessorValueTreeState::Listener
 {
 public:
     ZatAudioProcessor();
@@ -53,6 +53,8 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -71,13 +73,13 @@ private:
 
     juce::dsp::Oversampling<float> oversampling { 2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true };
 
-    using Filter = juce::dsp::IIR::Filter<float>;
-    using CutFilter = juce::dsp::ProcessorDuplicator<Filter, juce::dsp::IIR::Coefficients<float>>;
+    using CutFilter = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
 
-    CutFilter lowCutFilter;
-    CutFilter highCutFilter;
     CutFilter weightFilter;
     CutFilter airFilter;
+
+    juce::dsp::LinkwitzRileyFilter<float> lowCrossover;
+    juce::dsp::LinkwitzRileyFilter<float> highCrossover;
 
     float applySaturation (float input, int type, float drive);
 
