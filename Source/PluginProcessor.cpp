@@ -24,6 +24,7 @@ ZatAudioProcessor::ZatAudioProcessor()
     airAmountParam = apvts.getRawParameterValue (ParameterIDs::airAmount);
     inputGainParam = apvts.getRawParameterValue (ParameterIDs::inputGain);
     outputGainParam = apvts.getRawParameterValue (ParameterIDs::outputGain);
+    autoGainParam = apvts.getRawParameterValue (ParameterIDs::autoGain);
 
     apvts.addParameterListener (ParameterIDs::freqLowCut, this);
     apvts.addParameterListener (ParameterIDs::freqHighCut, this);
@@ -92,6 +93,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
         juce::ParameterID { ParameterIDs::outputGain, 1 }, "Output Gain",
         juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
         juce::AudioParameterFloatAttributes().withStringFromValueFunction ([](float val, int) { return juce::String (val, 1) + " dB"; })
+    ));
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { ParameterIDs::autoGain, 1 }, "Auto Gain", false
     ));
 
     return layout;
@@ -254,8 +259,12 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     
     float inGainDb = *inputGainParam;
     float outGainDb = *outputGainParam;
+    bool autoGainEnabled = *autoGainParam > 0.5f;
 
     buffer.applyGain (juce::Decibels::decibelsToGain (inGainDb));
+
+    juce::AudioBuffer<float> preProcessedBuffer;
+    preProcessedBuffer.makeCopyOf (buffer);
 
     double oversampledRate = currentSampleRate * 4.0;
 
@@ -409,7 +418,48 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     oversampling.processSamplesDown (block);
 
-    buffer.applyGain (juce::Decibels::decibelsToGain (outGainDb));
+    if (autoGainEnabled)
+    {
+        float preRms = 0.0f;
+        float postRms = 0.0f;
+
+        for (int ch = 0; ch < totalNumInputChannels; ++ch)
+        {
+            preRms  += preProcessedBuffer.getRMSLevel (ch, 0, buffer.getNumSamples());
+            postRms += buffer.getRMSLevel (ch, 0, buffer.getNumSamples());
+        }
+        preRms  /= static_cast<float> (totalNumInputChannels);
+        postRms /= static_cast<float> (totalNumInputChannels);
+
+        float targetGainDb = 0.0f;
+        if (postRms > 0.0001f && preRms > 0.0001f)
+        {
+            float makeupGainLinear = preRms / postRms;
+            targetGainDb = juce::Decibels::gainToDecibels (makeupGainLinear);
+            targetGainDb = juce::jlimit (-24.0f, 24.0f, targetGainDb);
+        }
+
+        float smoothingCoeff = 0.98f; 
+        smoothedAutoGainDb = (smoothingCoeff * smoothedAutoGainDb) + ((1.0f - smoothingCoeff) * targetGainDb);
+
+        auto* outputGainParamObj = apvts.getParameter (ParameterIDs::outputGain);
+        if (outputGainParamObj != nullptr)
+        {
+            float currentNormalized = outputGainParamObj->getValue();
+            float newNormalized = outputGainParamObj->convertTo0to1 (smoothedAutoGainDb);
+            if (std::abs (currentNormalized - newNormalized) > 0.001f)
+            {
+                outputGainParamObj->setValueNotifyingHost (newNormalized);
+            }
+        }
+
+        buffer.applyGain (juce::Decibels::decibelsToGain (smoothedAutoGainDb));
+    }
+    else
+    {
+        smoothedAutoGainDb = outGainDb;
+        buffer.applyGain (juce::Decibels::decibelsToGain (outGainDb));
+    }
 }
 
 bool ZatAudioProcessor::hasEditor() const {
