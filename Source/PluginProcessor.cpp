@@ -22,7 +22,7 @@ ZatAudioProcessor::ZatAudioProcessor()
     weightAmountParam = apvts.getRawParameterValue (ParameterIDs::weightAmount);
     airEnableParam = apvts.getRawParameterValue (ParameterIDs::airEnable);
     airAmountParam = apvts.getRawParameterValue (ParameterIDs::airAmount);
-    parallelModeParam = apvts.getRawParameterValue (ParameterIDs::parallelMode);
+    inputGainParam = apvts.getRawParameterValue (ParameterIDs::inputGain);
     outputGainParam = apvts.getRawParameterValue (ParameterIDs::outputGain);
 }
 
@@ -75,8 +75,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
         juce::AudioParameterFloatAttributes().withStringFromValueFunction ([](float val, int) { return juce::String (val, 1) + " %"; })
         ));
 
-    layout.add (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { ParameterIDs::parallelMode, 1 }, "Parallel Send Only", false
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { ParameterIDs::inputGain, 1 }, "Input Gain",
+        juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f,
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction ([](float val, int) { return juce::String (val, 1) + " dB"; })
     ));
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -201,8 +203,10 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     bool airEnable = *airEnableParam > 0.5f;
     float airAmt = *airAmountParam / 100.0f;
     
-    bool parallelMode = *parallelModeParam > 0.5f;
+    float inGainDb = *inputGainParam;
     float outGainDb = *outputGainParam;
+
+    buffer.applyGain (juce::Decibels::decibelsToGain (inGainDb));
 
     juce::AudioBuffer<float> dryBuffer;
     dryBuffer.makeCopyOf (buffer);
@@ -238,6 +242,8 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     oversampling.processSamplesDown (block);
 
+    const float equalPowerCoeff = 0.70710678f;
+
     for (int ch = 0; ch < totalNumInputChannels; ++ch)
     {
         auto* wet = buffer.getWritePointer (ch);
@@ -245,10 +251,7 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
         for (int s = 0; s < buffer.getNumSamples(); ++s)
         {
-            if (parallelMode)
-                wet[s] = wet[s] - dry[s];
-            else
-                wet[s] = wet[s];
+            wet[s] = (dry[s] * equalPowerCoeff) + (wet[s] * equalPowerCoeff);
         }
     }
 

@@ -15,7 +15,7 @@ namespace ParameterIDs
     static const juce::String airEnable = "airEnable";
     static const juce::String airAmount = "airAmount";
 
-    static const juce::String parallelMode = "parallelMode";
+    static const juce::String inputGain = "inputGain";
     static const juce::String outputGain = "outputGain";
 }
 
@@ -66,7 +66,7 @@ private:
     std::atomic<float>* weightAmountParam = nullptr;
     std::atomic<float>* airEnableParam = nullptr;
     std::atomic<float>* airAmountParam = nullptr;
-    std::atomic<float>* parallelModeParam = nullptr;
+    std::atomic<float>* inputGainParam = nullptr;
     std::atomic<float>* outputGainParam = nullptr;
 
     juce::dsp::Oversampling<float> oversampling { 2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true };
