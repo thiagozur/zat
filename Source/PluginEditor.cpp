@@ -84,13 +84,44 @@ void ZatAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.drawImageAt (background, 0, 0);
 
-    const float H = (float) getHeight();
+    const float W = static_cast<float> (getWidth());
+    const float H = static_cast<float> (getHeight());
+
+    juce::Rectangle<int> logoArea (
+        juce::roundToInt (32.0f / 1024.0f * W),
+        juce::roundToInt (24.0f / 658.0f * H),
+        juce::roundToInt (120.0f / 1024.0f * W), 
+        juce::roundToInt (40.0f / 658.0f * H)    
+    );
+
+    juce::Font font (ZatUI::makeFont (H * 0.045f, true));
+    juce::GlyphArrangement glyphs;
+    glyphs.addLineOfText (font, "zat", 0.0f, 0.0f);
+    juce::Path textPath;
+    glyphs.createPath (textPath);
+
+    juce::Rectangle<float> textBounds = textPath.getBounds();
+    float xOffset = static_cast<float>(logoArea.getX());
+    float yOffset = static_cast<float>(logoArea.getCentreY() - textBounds.getCentreY());
+    textPath.applyTransform (juce::AffineTransform::translation (xOffset, yOffset));
+
+    float bevelOffset = 1.0f;
+
+    g.setColour (juce::Colours::black.withAlpha(0.8f)); 
+    g.fillPath (textPath, juce::AffineTransform::translation (-bevelOffset, -bevelOffset));
+
+    g.setColour (juce::Colours::white);
+    g.fillPath (textPath, juce::AffineTransform::translation (bevelOffset, bevelOffset));
+
+    g.setColour (juce::Colour (0xffefefef));
+    g.fillPath (textPath);
+    
     g.setColour (ZatUI::textCol);
     g.setFont (ZatUI::makeFont (H * 0.034f));
     g.drawText ("amount", amountLabelArea.withTrimmedBottom (amountLabelArea.getHeight() / 2), juce::Justification::centred);
     g.setColour (ZatUI::textCol.withAlpha (0.85f));
     g.setFont (ZatUI::makeFont (H * 0.032f));
-    g.drawText (juce::String (juce::roundToInt ((float) amountKnob.getValue())) + "%",
+    g.drawText (juce::String (juce::roundToInt (static_cast<float> (amountKnob.getValue()))) + "%",
         amountLabelArea.withTrimmedTop (amountLabelArea.getHeight() / 2), juce::Justification::centred);
 }
 
