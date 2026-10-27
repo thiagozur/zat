@@ -69,7 +69,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { ParameterIDs::weightAmount, 1 }, "Weight Amount",
-        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f,
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         juce::AudioParameterFloatAttributes().withStringFromValueFunction ([](float val, int) { return juce::String (val, 1) + " %"; })
         ));
 
@@ -79,7 +79,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ZatAudioProcessor::createPar
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { ParameterIDs::airAmount, 1 }, "Air Amount",
-        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 50.0f,
+        juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f,
         juce::AudioParameterFloatAttributes().withStringFromValueFunction ([](float val, int) { return juce::String (val, 1) + " %"; })
         ));
 

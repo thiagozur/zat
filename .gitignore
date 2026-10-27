@@ -1,2 +1,5 @@
 build/
 .vscode/
+Zat_installer.iss
+Output/
+GitHub_releases/
