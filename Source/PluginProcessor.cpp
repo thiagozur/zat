@@ -468,7 +468,7 @@ bool ZatAudioProcessor::hasEditor() const {
 
 juce::AudioProcessorEditor* ZatAudioProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor (*this);
+    return new ZatAudioProcessorEditor (*this);
 }
 
 const juce::String ZatAudioProcessor::getName() const

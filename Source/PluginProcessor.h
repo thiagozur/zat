@@ -58,6 +58,9 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    std::atomic<float> inputPeak { 0.0f };
+    std::atomic<float> outputPeak { 0.0f };
+
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 

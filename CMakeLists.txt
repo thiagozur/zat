@@ -29,10 +29,9 @@ juce_add_plugin(Zat
 
 target_sources(Zat
     PRIVATE
-        Source/PluginProcessor.h
         Source/PluginProcessor.cpp
-        Source/PluginEditor.h
         Source/PluginEditor.cpp
+        Source/Styles/ZatLookAndFeel.cpp
 )
 
 target_compile_definitions(Zat
