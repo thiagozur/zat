@@ -32,7 +32,7 @@ namespace ZatUI
 
     inline juce::Font makeFont (float height, bool bold = true)
     {
-        return juce::Font (fontName(), height, bold ? juce::Font::bold : juce::Font::plain); // CAMBIAR
+        return juce::Font (juce::FontOptions (fontName(), height, bold ? juce::Font::bold : juce::Font::plain));
     }
 
     inline constexpr float arcStart = juce::MathConstants<float>::pi * 1.25f;

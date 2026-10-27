@@ -263,6 +263,8 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     buffer.applyGain (juce::Decibels::decibelsToGain (inGainDb));
 
+    inputPeak.store (juce::jmax (inputPeak.load(), buffer.getMagnitude (0, buffer.getNumSamples())));
+
     juce::AudioBuffer<float> preProcessedBuffer;
     preProcessedBuffer.makeCopyOf (buffer);
 
@@ -417,6 +419,8 @@ void ZatAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     }
 
     oversampling.processSamplesDown (block);
+
+    outputPeak.store (juce::jmax (outputPeak.load(), buffer.getMagnitude (0, buffer.getNumSamples())));
 
     if (autoGainEnabled)
     {
